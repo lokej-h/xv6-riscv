@@ -10,6 +10,7 @@ struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
+extern uint64 timer_scratch[8][5];
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
@@ -78,7 +79,13 @@ usertrap(void)
 
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)
+  {
+    printf("Yes\n");
+    uint64* scratch = timer_scratch[0];
+    scratch[4] = scratch[4]*2;
+    printf("Interval is now %d cycles.", scratch[4]);
     yield();
+  }
 
   usertrapret();
 }
@@ -151,7 +158,10 @@ kerneltrap()
 
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING)
+  {
+    printf("No am kernel\n");
     yield();
+  }
 
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.
