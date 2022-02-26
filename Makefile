@@ -135,6 +135,7 @@ UPROGS=\
 	$U/_zombie\
 	$U/_test\
 	$U/_nowtherearetwo\
+	$U/_therebeyields\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
