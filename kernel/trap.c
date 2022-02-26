@@ -113,6 +113,7 @@ usertrap(void)
 
         printf("new tick interval %d\n",scratch[4]);
         printf("current burst length %d\n", burst_length);
+        printf("\tPID: %d\n", p->pid);
 
         yield();
     }
