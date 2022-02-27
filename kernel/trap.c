@@ -16,18 +16,19 @@ uint64 current_time;
 uint64 prev_time;
 uint64 current_time_spent;
 
-// actual time spent on a process, accumulation of time between tick interrupts
-uint64 burst_length;
-
 // alpha for tick interval prediction
 double ALPHA = 0.8;
 
-// max and min tick intervals
-uint64 current_tick_interval = 1000000;
+// Tick interval cap
 uint64 MAX_INTERVAL = 100000000;
 
 // holds previous tick interval for next tick interval prediction
 uint64 prev_tick_interval = 1000000;
+
+// storage for each process's current/previous tick interval and burst times
+uint64 current_tick_interval_list[64];
+uint64 prev_tick_interval_list[64];
+uint64 current_burst_list[64];
 
 extern char trampoline[], uservec[], userret[];
 
@@ -40,6 +41,9 @@ void
 trapinit(void)
 {
     initlock(&tickslock, "time");
+    for (int i = 0; i < 64; ++i) {
+        current_tick_interval_list[i] = 1000000;
+    }
 }
 
 // set up to take exceptions and traps while in the kernel.
@@ -102,18 +106,23 @@ usertrap(void)
         uint64* scratch = timer_scratch[0];
 
         // burst length is actual time spent on process so far
-        burst_length += current_time_spent;
+        current_burst_list[p->pid] += current_time_spent;
 
         // cap tick interval
-        if(scratch[4] < MAX_INTERVAL)
+        if(current_tick_interval_list[p->pid] < MAX_INTERVAL) {
             // set next tick interval: (alpha * burst length) + ((1-alpha) * previous tick interval)
-            scratch[4] = (burst_length * ALPHA) + ((1 - ALPHA) * prev_tick_interval);
-        // keep track of previous tick interval
-        prev_tick_interval = scratch[4];
+            current_tick_interval_list[p->pid] = (current_burst_list[p->pid] * ALPHA) + ((1 - ALPHA) * prev_tick_interval_list[p->pid]);
+        }
 
-        printf("new tick interval %d\n",scratch[4]);
-        printf("current burst length %d\n", burst_length);
+        // set tick interval
+        scratch[4] = current_tick_interval_list[p->pid];
+
+        // keep track of previous tick interval
+        prev_tick_interval_list[p->pid] = current_tick_interval_list[p->pid];
+
         printf("\tPID: %d\n", p->pid);
+        printf("new tick interval %d\n",scratch[4]);
+        printf("current burst length %d\n", current_burst_list[p->pid]);
 
         yield();
     }
