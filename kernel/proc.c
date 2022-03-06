@@ -427,8 +427,27 @@ wait(uint64 addr)
   }
 }
 
-extern uint64 current_tick_interval_list[64];
-extern uint64 current_time_spent;
+// INTERVAL SCHEDULING VARIABLES----------------------------------
+// NOTE: All these variables are in cycles, not ticks
+//  but our resolution of actual interrupts/context switching are ticks.
+#define UNITTICK 1000000
+
+// Tick interval cap
+uint64 MAX_INTERVAL = 100000000;
+
+// holds previous tick interval for next tick interval prediction
+uint64 prev_tick_interval = 1000000;
+
+// alpha for tick interval prediction
+double ALPHA = 0.8;
+
+// Keep track of our current and prev intervals for calc
+uint64 current_tick_interval_list[64];
+uint64 prev_tick_interval_list[64];
+// bring in the calculated numbers of time spent from clockintr()
+extern uint64 current_burst_list[64];
+extern uint64 current_burst_time_spent;
+// END------------------------------------------------------------
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -454,15 +473,21 @@ scheduler(void)
       // get limit for selected process
       uint64 ticklimit = current_tick_interval_list[p->pid];
       // init time spent with process
-      current_time_spent = 0;
+      current_burst_time_spent = 0;
+      // flag to do calculation
+      uint8 proc_ran = 0;
       // END --------------------------------------
       //
       // If the processes can be run, we start the proc
       //   and continue until we run out of time or not runnable anymore
-      while(p->state == RUNNABLE && current_time_spent < ticklimit) {
+      while(p->state == RUNNABLE && current_burst_time_spent < ticklimit) {
         // if we're here, it means that either this is our first time through
         // or we yielded our time, but still runnable, so the scheduler gives
         // another round.
+
+        printf("Running PID: %d\n", p->pid);
+        printf("\tNew tick limit %d\n",ticklimit);
+        proc_ran = 1;
 
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
@@ -475,6 +500,31 @@ scheduler(void)
         // It should have changed its p->state before coming back.
         c->proc = 0;
       }
+      if (proc_ran != 0)
+      {
+        // now that the proc cannot run anymore, the CPU burst is complete
+        //  do the calculations for the next CPU burst interval for this proc
+        printf("\tBurst end.\n");
+
+        // cap tick interval
+        // set next tick interval: (alpha * burst length) + ((1-alpha) * previous tick interval)
+        printf("\tCalculating new interval.\n");
+        printf("\t\tBurst Length\t%d\n\t\tPrevious Length\t%d\n", current_burst_list[p->pid], prev_tick_interval_list[p->pid]);
+        uint64 projection = (current_burst_list[p->pid] * ALPHA) + ((1 - ALPHA) * prev_tick_interval_list[p->pid]);
+        printf("\t\t\tProjected %d\n", projection);
+        if (projection < UNITTICK)
+          current_tick_interval_list[p->pid] = UNITTICK;
+        if (projection > MAX_INTERVAL)
+          current_tick_interval_list[p->pid] = MAX_INTERVAL;
+        printf("\t\t\tAdjusted projection %d\n", projection);
+
+        // keep track of previous tick interval
+        prev_tick_interval_list[p->pid] = current_tick_interval_list[p->pid];
+        // current_tick_interval_list[p->pid] = MAX_INTERVAL;
+
+        printf("\tNext burst length %d\n", current_tick_interval_list[p->pid]);
+      }
+
       release(&p->lock);
     }
   }

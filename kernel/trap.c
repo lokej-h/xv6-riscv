@@ -6,6 +6,8 @@
 #include "proc.h"
 #include "defs.h"
 
+#define UNITTICK 1000000
+
 struct spinlock tickslock;
 uint ticks;
 uint64 largeticks;
@@ -15,20 +17,13 @@ uint64 largeticks;
 // used to get time between tick interrupts
 uint64 current_time;
 uint64 prev_time;
-uint64 current_time_spent;
+uint64 current_burst_time_spent = UNITTICK;
+uint64 current_tick_time_spent = UNITTICK;
 
-// alpha for tick interval prediction
-double ALPHA = 0.8;
-
-// Tick interval cap
-uint64 MAX_INTERVAL = 100000000;
-
-// holds previous tick interval for next tick interval prediction
-uint64 prev_tick_interval = 1000000;
+// bring in the proc books
+extern uint64 current_tick_interval_list[64];
 
 // storage for each process's current/previous tick interval and burst times
-uint64 current_tick_interval_list[64];
-uint64 prev_tick_interval_list[64];
 uint64 current_burst_list[64];
 
 extern char trampoline[], uservec[], userret[];
@@ -105,26 +100,13 @@ usertrap(void)
     // well, we give it up, but we might get it back later.
     if(which_dev == 2) {
 
-        // uint64* scratch = timer_scratch[0];
-
         // burst length is actual time spent on process so far
-        current_burst_list[p->pid] += current_time_spent;
+        current_burst_list[p->pid] += current_tick_time_spent;
+        printf("\t\t\t%d", current_tick_time_spent);
 
-        // cap tick interval
-        if(current_tick_interval_list[p->pid] < MAX_INTERVAL) {
-            // set next tick interval: (alpha * burst length) + ((1-alpha) * previous tick interval)
-            current_tick_interval_list[p->pid] = (current_burst_list[p->pid] * ALPHA) + ((1 - ALPHA) * prev_tick_interval_list[p->pid]);
-        }
-
-        // set tick interval
-        // scratch[4] = current_tick_interval_list[p->pid];
-
-        // keep track of previous tick interval
-        prev_tick_interval_list[p->pid] = current_tick_interval_list[p->pid];
-
-        printf("\tPID: %d\n", p->pid);
-        printf("new tick interval %d\n",scratch[4]);
-        printf("current burst length %d\n", current_burst_list[p->pid]);
+        // add to our current burst time
+        //  only reset on burst time change
+        current_burst_time_spent += current_tick_time_spent;
 
         yield();
     }
@@ -215,7 +197,7 @@ clockintr()
     current_time = r_time();
     ticks++;
     // get time spent between tick interrupts
-    current_time_spent = current_time - prev_time;
+    current_tick_time_spent = current_time - prev_time;
     prev_time = current_time;
     wakeup(&ticks);
     release(&tickslock);
