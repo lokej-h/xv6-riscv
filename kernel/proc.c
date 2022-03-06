@@ -430,7 +430,6 @@ wait(uint64 addr)
 // INTERVAL SCHEDULING VARIABLES----------------------------------
 // NOTE: All these variables are in cycles, not ticks
 //  but our resolution of actual interrupts/context switching are ticks.
-#define UNITTICK 1000000
 
 // Tick interval cap
 uint64 MAX_INTERVAL = 100000000;
@@ -514,8 +513,12 @@ scheduler(void)
         printf("\t\t\tProjected %d\n", projection);
         if (projection < UNITTICK)
           current_tick_interval_list[p->pid] = UNITTICK;
-        if (projection > MAX_INTERVAL)
-          current_tick_interval_list[p->pid] = MAX_INTERVAL;
+        else
+          if (projection > MAX_INTERVAL || current_burst_list < 0)
+            current_tick_interval_list[p->pid] = MAX_INTERVAL;
+          else
+            current_tick_interval_list[p->pid] = projection;
+
         printf("\t\t\tAdjusted projection %d\n", projection);
 
         // keep track of previous tick interval

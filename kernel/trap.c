@@ -6,8 +6,6 @@
 #include "proc.h"
 #include "defs.h"
 
-#define UNITTICK 1000000
-
 struct spinlock tickslock;
 uint ticks;
 uint64 largeticks;
@@ -47,6 +45,17 @@ void
 trapinithart(void)
 {
     w_stvec((uint64)kernelvec);
+}
+
+void track_time(struct proc *p)
+{
+  // burst length is actual time spent on process so far
+  current_burst_list[p->pid] += current_tick_time_spent;
+  printf("-----Tick Time Spent:\t%d\n", current_tick_time_spent);
+  
+  // add to our current burst time
+  //  only reset on burst time change
+  current_burst_time_spent += current_tick_time_spent;
 }
 
 //
@@ -98,18 +107,10 @@ usertrap(void)
 
     // give up the CPU if this is a timer interrupt.
     // well, we give it up, but we might get it back later.
-    if(which_dev == 2) {
-
-        // burst length is actual time spent on process so far
-        current_burst_list[p->pid] += current_tick_time_spent;
-        printf("\t\t\t%d", current_tick_time_spent);
-
-        // add to our current burst time
-        //  only reset on burst time change
-        current_burst_time_spent += current_tick_time_spent;
-
+    if(which_dev == 2)
         yield();
-    }
+
+    track_time(p);
 
     usertrapret();
 }
@@ -182,7 +183,7 @@ kerneltrap()
 
     // give up the CPU if this is a timer interrupt.
     if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING)
-        yield();
+      yield();
 
     // the yield() may have caused some traps to occur,
     // so restore trap registers for use by kernelvec.S's sepc instruction.
