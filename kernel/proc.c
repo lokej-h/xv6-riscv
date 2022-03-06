@@ -427,6 +427,8 @@ wait(uint64 addr)
   }
 }
 
+extern uint64 current_tick_interval_list[64];
+extern uint64 current_time_spent;
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -447,7 +449,21 @@ scheduler(void)
 
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
-      if(p->state == RUNNABLE) {
+      // SETUP PROGRAM TIME LIMITS-----------------
+      //
+      // get limit for selected process
+      uint64 ticklimit = current_tick_interval_list[p->pid];
+      // init time spent with process
+      current_time_spent = 0;
+      // END --------------------------------------
+      //
+      // If the processes can be run, we start the proc
+      //   and continue until we run out of time or not runnable anymore
+      while(p->state == RUNNABLE && current_time_spent < ticklimit) {
+        // if we're here, it means that either this is our first time through
+        // or we yielded our time, but still runnable, so the scheduler gives
+        // another round.
+
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.

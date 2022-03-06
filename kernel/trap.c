@@ -8,8 +8,9 @@
 
 struct spinlock tickslock;
 uint ticks;
+uint64 largeticks;
 
-extern uint64 timer_scratch[8][5];
+// extern uint64 timer_scratch[8][5];
 
 // used to get time between tick interrupts
 uint64 current_time;
@@ -101,9 +102,10 @@ usertrap(void)
         exit(-1);
 
     // give up the CPU if this is a timer interrupt.
+    // well, we give it up, but we might get it back later.
     if(which_dev == 2) {
 
-        uint64* scratch = timer_scratch[0];
+        // uint64* scratch = timer_scratch[0];
 
         // burst length is actual time spent on process so far
         current_burst_list[p->pid] += current_time_spent;
@@ -115,7 +117,7 @@ usertrap(void)
         }
 
         // set tick interval
-        scratch[4] = current_tick_interval_list[p->pid];
+        // scratch[4] = current_tick_interval_list[p->pid];
 
         // keep track of previous tick interval
         prev_tick_interval_list[p->pid] = current_tick_interval_list[p->pid];
