@@ -1,0 +1,613 @@
+diff --git a/Makefile b/Makefile
+index 328f9c6..95c5e53 100644
+--- a/Makefile
++++ b/Makefile
+@@ -49,6 +49,7 @@ TOOLPREFIX := $(shell if riscv64-unknown-elf-objdump -i 2>&1 | grep 'elf64-big'
+ endif
+ 
+ QEMU = qemu-system-riscv64
++# QEMU = ~/qemu-6.2.0/build/riscv64-softmmu/qemu-system-riscv64
+ 
+ CC = $(TOOLPREFIX)gcc
+ AS = $(TOOLPREFIX)gas
+@@ -132,6 +133,9 @@ UPROGS=\
+ 	$U/_grind\
+ 	$U/_wc\
+ 	$U/_zombie\
++	$U/_test\
++	$U/_nowtherearetwo\
++	$U/_therebeyields\
+ 
+ fs.img: mkfs/mkfs README $(UPROGS)
+ 	mkfs/mkfs fs.img README $(UPROGS)
+@@ -153,7 +157,7 @@ QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
+ 	then echo "-gdb tcp::$(GDBPORT)"; \
+ 	else echo "-s -p $(GDBPORT)"; fi)
+ ifndef CPUS
+-CPUS := 3
++CPUS := 1
+ endif
+ 
+ QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
+diff --git a/kernel/defs.h b/kernel/defs.h
+index 3564db4..f1536f2 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -184,3 +184,6 @@ void            virtio_disk_intr(void);
+ 
+ // number of elements in fixed-size array
+ #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
++
++// number of cycles per tick
++#define UNITTICK 1000000
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 22e7ce4..1059645 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -427,6 +427,26 @@ wait(uint64 addr)
+   }
+ }
+ 
++// INTERVAL SCHEDULING VARIABLES----------------------------------
++// NOTE: All these variables are in cycles, not ticks
++//  but our resolution of actual interrupts/context switching are ticks.
++
++// Tick interval cap
++uint64 MAX_INTERVAL = 100000000;
++
++// holds previous tick interval for next tick interval prediction
++uint64 prev_tick_interval = 1000000;
++
++// alpha for tick interval prediction
++double ALPHA = 0.8;
++
++// Keep track of our current and prev intervals for calc
++uint64 current_tick_interval_list[64];
++uint64 prev_tick_interval_list[64];
++// bring in the calculated numbers of time spent from clockintr()
++extern uint64 current_burst_list[64];
++extern uint64 current_burst_time_spent;
++// END------------------------------------------------------------
+ // Per-CPU process scheduler.
+ // Each CPU calls scheduler() after setting itself up.
+ // Scheduler never returns.  It loops, doing:
+@@ -447,7 +467,27 @@ scheduler(void)
+ 
+     for(p = proc; p < &proc[NPROC]; p++) {
+       acquire(&p->lock);
+-      if(p->state == RUNNABLE) {
++      // SETUP PROGRAM TIME LIMITS-----------------
++      //
++      // get limit for selected process
++      uint64 ticklimit = current_tick_interval_list[p->pid];
++      // init time spent with process
++      current_burst_time_spent = 0;
++      // flag to do calculation
++      uint8 proc_ran = 0;
++      // END --------------------------------------
++      //
++      // If the processes can be run, we start the proc
++      //   and continue until we run out of time or not runnable anymore
++      while(p->state == RUNNABLE && current_burst_time_spent < ticklimit) {
++        // if we're here, it means that either this is our first time through
++        // or we yielded our time, but still runnable, so the scheduler gives
++        // another round.
++
++        printf("Running PID: %d\n", p->pid);
++        printf("\tNew tick limit %d\n",ticklimit);
++        proc_ran = 1;
++
+         // Switch to chosen process.  It is the process's job
+         // to release its lock and then reacquire it
+         // before jumping back to us.
+@@ -459,6 +499,35 @@ scheduler(void)
+         // It should have changed its p->state before coming back.
+         c->proc = 0;
+       }
++      if (proc_ran != 0)
++      {
++        // now that the proc cannot run anymore, the CPU burst is complete
++        //  do the calculations for the next CPU burst interval for this proc
++        printf("\tBurst end.\n");
++
++        // cap tick interval
++        // set next tick interval: (alpha * burst length) + ((1-alpha) * previous tick interval)
++        printf("\tCalculating new interval.\n");
++        printf("\t\tBurst Length\t%d\n\t\tPrevious Length\t%d\n", current_burst_list[p->pid], prev_tick_interval_list[p->pid]);
++        uint64 projection = (current_burst_list[p->pid] * ALPHA) + ((1 - ALPHA) * prev_tick_interval_list[p->pid]);
++        printf("\t\t\tProjected %d\n", projection);
++        if (projection < UNITTICK)
++          current_tick_interval_list[p->pid] = UNITTICK;
++        else
++          if (projection > MAX_INTERVAL || current_burst_list < 0)
++            current_tick_interval_list[p->pid] = MAX_INTERVAL;
++          else
++            current_tick_interval_list[p->pid] = projection;
++
++        printf("\t\t\tAdjusted projection %d\n", projection);
++
++        // keep track of previous tick interval
++        prev_tick_interval_list[p->pid] = current_tick_interval_list[p->pid];
++        // current_tick_interval_list[p->pid] = MAX_INTERVAL;
++
++        printf("\tNext burst length %d\n", current_tick_interval_list[p->pid]);
++      }
++
+       release(&p->lock);
+     }
+   }
+diff --git a/kernel/start.c b/kernel/start.c
+index 938e837..4bba09c 100644
+--- a/kernel/start.c
++++ b/kernel/start.c
+@@ -65,7 +65,8 @@ timerinit()
+   int id = r_mhartid();
+ 
+   // ask the CLINT for a timer interrupt.
+-  int interval = 1000000; // cycles; about 1/10th second in qemu.
++  // int interval = 1000000; // cycles; about 1/10th second in qemu.
++  int interval = UNITTICK; // cycles; about 1/10th second in qemu.
+   *(uint64*)CLINT_MTIMECMP(id) = *(uint64*)CLINT_MTIME + interval;
+ 
+   // prepare information in scratch[] for timervec.
+diff --git a/kernel/trap.c b/kernel/trap.c
+index a63249e..e79502d 100644
+--- a/kernel/trap.c
++++ b/kernel/trap.c
+@@ -8,6 +8,21 @@
+ 
+ struct spinlock tickslock;
+ uint ticks;
++uint64 largeticks;
++
++// extern uint64 timer_scratch[8][5];
++
++// used to get time between tick interrupts
++uint64 current_time;
++uint64 prev_time;
++uint64 current_burst_time_spent = UNITTICK;
++uint64 current_tick_time_spent = UNITTICK;
++
++// bring in the proc books
++extern uint64 current_tick_interval_list[64];
++
++// storage for each process's current/previous tick interval and burst times
++uint64 current_burst_list[64];
+ 
+ extern char trampoline[], uservec[], userret[];
+ 
+@@ -19,14 +34,28 @@ extern int devintr();
+ void
+ trapinit(void)
+ {
+-  initlock(&tickslock, "time");
++    initlock(&tickslock, "time");
++    for (int i = 0; i < 64; ++i) {
++        current_tick_interval_list[i] = 1000000;
++    }
+ }
+ 
+ // set up to take exceptions and traps while in the kernel.
+ void
+ trapinithart(void)
+ {
+-  w_stvec((uint64)kernelvec);
++    w_stvec((uint64)kernelvec);
++}
++
++void track_time(struct proc *p)
++{
++  // burst length is actual time spent on process so far
++  current_burst_list[p->pid] += current_tick_time_spent;
++//   printf("-----Tick Time Spent:\t%d\n", current_tick_time_spent);
++  
++  // add to our current burst time
++  //  only reset on burst time change
++  current_burst_time_spent += current_tick_time_spent;
+ }
+ 
+ //
+@@ -36,51 +65,54 @@ trapinithart(void)
+ void
+ usertrap(void)
+ {
+-  int which_dev = 0;
++    int which_dev = 0;
+ 
+-  if((r_sstatus() & SSTATUS_SPP) != 0)
+-    panic("usertrap: not from user mode");
++    if((r_sstatus() & SSTATUS_SPP) != 0)
++        panic("usertrap: not from user mode");
+ 
+-  // send interrupts and exceptions to kerneltrap(),
+-  // since we're now in the kernel.
+-  w_stvec((uint64)kernelvec);
++    // send interrupts and exceptions to kerneltrap(),
++    // since we're now in the kernel.
++    w_stvec((uint64)kernelvec);
+ 
+-  struct proc *p = myproc();
+-  
+-  // save user program counter.
+-  p->trapframe->epc = r_sepc();
+-  
+-  if(r_scause() == 8){
+-    // system call
++    struct proc *p = myproc();
+ 
+-    if(p->killed)
+-      exit(-1);
++    // save user program counter.
++    p->trapframe->epc = r_sepc();
++
++    if(r_scause() == 8){
++        // system call
+ 
+-    // sepc points to the ecall instruction,
+-    // but we want to return to the next instruction.
+-    p->trapframe->epc += 4;
++        if(p->killed)
++            exit(-1);
+ 
+-    // an interrupt will change sstatus &c registers,
+-    // so don't enable until done with those registers.
+-    intr_on();
++        // sepc points to the ecall instruction,
++        // but we want to return to the next instruction.
++        p->trapframe->epc += 4;
+ 
+-    syscall();
+-  } else if((which_dev = devintr()) != 0){
+-    // ok
+-  } else {
+-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+-    p->killed = 1;
+-  }
++        // an interrupt will change sstatus &c registers,
++        // so don't enable until done with those registers.
++        intr_on();
++
++        syscall();
++    } else if((which_dev = devintr()) != 0){
++        // ok
++    } else {
++        printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
++        printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
++        p->killed = 1;
++    }
++
++    if(p->killed)
++        exit(-1);
+ 
+-  if(p->killed)
+-    exit(-1);
++    // give up the CPU if this is a timer interrupt.
++    // well, we give it up, but we might get it back later.
++    if(which_dev == 2)
++        yield();
+ 
+-  // give up the CPU if this is a timer interrupt.
+-  if(which_dev == 2)
+-    yield();
++    track_time(p);
+ 
+-  usertrapret();
++    usertrapret();
+ }
+ 
+ //
+@@ -89,83 +121,87 @@ usertrap(void)
+ void
+ usertrapret(void)
+ {
+-  struct proc *p = myproc();
+-
+-  // we're about to switch the destination of traps from
+-  // kerneltrap() to usertrap(), so turn off interrupts until
+-  // we're back in user space, where usertrap() is correct.
+-  intr_off();
+-
+-  // send syscalls, interrupts, and exceptions to trampoline.S
+-  w_stvec(TRAMPOLINE + (uservec - trampoline));
+-
+-  // set up trapframe values that uservec will need when
+-  // the process next re-enters the kernel.
+-  p->trapframe->kernel_satp = r_satp();         // kernel page table
+-  p->trapframe->kernel_sp = p->kstack + PGSIZE; // process's kernel stack
+-  p->trapframe->kernel_trap = (uint64)usertrap;
+-  p->trapframe->kernel_hartid = r_tp();         // hartid for cpuid()
+-
+-  // set up the registers that trampoline.S's sret will use
+-  // to get to user space.
+-  
+-  // set S Previous Privilege mode to User.
+-  unsigned long x = r_sstatus();
+-  x &= ~SSTATUS_SPP; // clear SPP to 0 for user mode
+-  x |= SSTATUS_SPIE; // enable interrupts in user mode
+-  w_sstatus(x);
+-
+-  // set S Exception Program Counter to the saved user pc.
+-  w_sepc(p->trapframe->epc);
+-
+-  // tell trampoline.S the user page table to switch to.
+-  uint64 satp = MAKE_SATP(p->pagetable);
+-
+-  // jump to trampoline.S at the top of memory, which 
+-  // switches to the user page table, restores user registers,
+-  // and switches to user mode with sret.
+-  uint64 fn = TRAMPOLINE + (userret - trampoline);
+-  ((void (*)(uint64,uint64))fn)(TRAPFRAME, satp);
++    struct proc *p = myproc();
++
++    // we're about to switch the destination of traps from
++    // kerneltrap() to usertrap(), so turn off interrupts until
++    // we're back in user space, where usertrap() is correct.
++    intr_off();
++
++    // send syscalls, interrupts, and exceptions to trampoline.S
++    w_stvec(TRAMPOLINE + (uservec - trampoline));
++
++    // set up trapframe values that uservec will need when
++    // the process next re-enters the kernel.
++    p->trapframe->kernel_satp = r_satp();         // kernel page table
++    p->trapframe->kernel_sp = p->kstack + PGSIZE; // process's kernel stack
++    p->trapframe->kernel_trap = (uint64)usertrap;
++    p->trapframe->kernel_hartid = r_tp();         // hartid for cpuid()
++
++    // set up the registers that trampoline.S's sret will use
++    // to get to user space.
++
++    // set S Previous Privilege mode to User.
++    unsigned long x = r_sstatus();
++    x &= ~SSTATUS_SPP; // clear SPP to 0 for user mode
++    x |= SSTATUS_SPIE; // enable interrupts in user mode
++    w_sstatus(x);
++
++    // set S Exception Program Counter to the saved user pc.
++    w_sepc(p->trapframe->epc);
++
++    // tell trampoline.S the user page table to switch to.
++    uint64 satp = MAKE_SATP(p->pagetable);
++
++    // jump to trampoline.S at the top of memory, which
++    // switches to the user page table, restores user registers,
++    // and switches to user mode with sret.
++    uint64 fn = TRAMPOLINE + (userret - trampoline);
++    ((void (*)(uint64,uint64))fn)(TRAPFRAME, satp);
+ }
+ 
+ // interrupts and exceptions from kernel code go here via kernelvec,
+ // on whatever the current kernel stack is.
+-void 
++void
+ kerneltrap()
+ {
+-  int which_dev = 0;
+-  uint64 sepc = r_sepc();
+-  uint64 sstatus = r_sstatus();
+-  uint64 scause = r_scause();
+-  
+-  if((sstatus & SSTATUS_SPP) == 0)
+-    panic("kerneltrap: not from supervisor mode");
+-  if(intr_get() != 0)
+-    panic("kerneltrap: interrupts enabled");
+-
+-  if((which_dev = devintr()) == 0){
+-    printf("scause %p\n", scause);
+-    printf("sepc=%p stval=%p\n", r_sepc(), r_stval());
+-    panic("kerneltrap");
+-  }
+-
+-  // give up the CPU if this is a timer interrupt.
+-  if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING)
+-    yield();
+-
+-  // the yield() may have caused some traps to occur,
+-  // so restore trap registers for use by kernelvec.S's sepc instruction.
+-  w_sepc(sepc);
+-  w_sstatus(sstatus);
++    int which_dev = 0;
++    uint64 sepc = r_sepc();
++    uint64 sstatus = r_sstatus();
++    uint64 scause = r_scause();
++
++    if((sstatus & SSTATUS_SPP) == 0)
++        panic("kerneltrap: not from supervisor mode");
++    if(intr_get() != 0)
++        panic("kerneltrap: interrupts enabled");
++
++    if((which_dev = devintr()) == 0){
++        printf("scause %p\n", scause);
++        printf("sepc=%p stval=%p\n", r_sepc(), r_stval());
++        panic("kerneltrap");
++    }
++
++    // give up the CPU if this is a timer interrupt.
++    if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING)
++      yield();
++
++    // the yield() may have caused some traps to occur,
++    // so restore trap registers for use by kernelvec.S's sepc instruction.
++    w_sepc(sepc);
++    w_sstatus(sstatus);
+ }
+ 
+ void
+ clockintr()
+ {
+-  acquire(&tickslock);
+-  ticks++;
+-  wakeup(&ticks);
+-  release(&tickslock);
++    acquire(&tickslock);
++    current_time = r_time();
++    ticks++;
++    // get time spent between tick interrupts
++    current_tick_time_spent = current_time - prev_time;
++    prev_time = current_time;
++    wakeup(&ticks);
++    release(&tickslock);
+ }
+ 
+ // check if it's an external interrupt or software interrupt,
+@@ -176,45 +212,45 @@ clockintr()
+ int
+ devintr()
+ {
+-  uint64 scause = r_scause();
+-
+-  if((scause & 0x8000000000000000L) &&
+-     (scause & 0xff) == 9){
+-    // this is a supervisor external interrupt, via PLIC.
+-
+-    // irq indicates which device interrupted.
+-    int irq = plic_claim();
+-
+-    if(irq == UART0_IRQ){
+-      uartintr();
+-    } else if(irq == VIRTIO0_IRQ){
+-      virtio_disk_intr();
+-    } else if(irq){
+-      printf("unexpected interrupt irq=%d\n", irq);
+-    }
+-
+-    // the PLIC allows each device to raise at most one
+-    // interrupt at a time; tell the PLIC the device is
+-    // now allowed to interrupt again.
+-    if(irq)
+-      plic_complete(irq);
+-
+-    return 1;
+-  } else if(scause == 0x8000000000000001L){
+-    // software interrupt from a machine-mode timer interrupt,
+-    // forwarded by timervec in kernelvec.S.
+-
+-    if(cpuid() == 0){
+-      clockintr();
++    uint64 scause = r_scause();
++
++    if((scause & 0x8000000000000000L) &&
++       (scause & 0xff) == 9){
++        // this is a supervisor external interrupt, via PLIC.
++
++        // irq indicates which device interrupted.
++        int irq = plic_claim();
++
++        if(irq == UART0_IRQ){
++            uartintr();
++        } else if(irq == VIRTIO0_IRQ){
++            virtio_disk_intr();
++        } else if(irq){
++            printf("unexpected interrupt irq=%d\n", irq);
++        }
++
++        // the PLIC allows each device to raise at most one
++        // interrupt at a time; tell the PLIC the device is
++        // now allowed to interrupt again.
++        if(irq)
++            plic_complete(irq);
++
++        return 1;
++    } else if(scause == 0x8000000000000001L){
++        // software interrupt from a machine-mode timer interrupt,
++        // forwarded by timervec in kernelvec.S.
++
++        if(cpuid() == 0){
++            clockintr();
++        }
++
++        // acknowledge the software interrupt by clearing
++        // the SSIP bit in sip.
++        w_sip(r_sip() & ~2);
++
++        return 2;
++    } else {
++        return 0;
+     }
+-    
+-    // acknowledge the software interrupt by clearing
+-    // the SSIP bit in sip.
+-    w_sip(r_sip() & ~2);
+-
+-    return 2;
+-  } else {
+-    return 0;
+-  }
+ }
+ 
+diff --git a/user/nowtherearetwo.c b/user/nowtherearetwo.c
+new file mode 100644
+index 0000000..e42b55d
+--- /dev/null
++++ b/user/nowtherearetwo.c
+@@ -0,0 +1,10 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user.h"
++
++int main() 
++{
++  fork();
++  while(1);
++  return 0;
++}
+diff --git a/user/test.c b/user/test.c
+new file mode 100644
+index 0000000..04c63ee
+--- /dev/null
++++ b/user/test.c
+@@ -0,0 +1,10 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++
++int
++main(int argc, char *argv[])
++{
++    while(1);
++    exit(0);
++}
+diff --git a/user/therebeyields.c b/user/therebeyields.c
+new file mode 100644
+index 0000000..58ba38e
+--- /dev/null
++++ b/user/therebeyields.c
+@@ -0,0 +1,37 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user.h"
++
++void yielder()
++{
++  // these procs will always yield,
++  // which should hog the CPU and starve everything else
++  printf("\tI am the yielder: %d\n", getpid());
++  while(1)
++  {
++    printf("\t\tYielding again!\n");
++    sleep(1);
++  }
++}
++
++void full_burst()
++{
++  // these procs will always time out
++  // making their bursts larger and larger
++  printf("\tI am the burster: %d\n", getpid());
++  while(1);
++}
++
++int main()
++{
++  int pid, i;
++  int N = 64;
++  for (i=0; i<N; i++)
++  {
++    pid = fork();
++    if (pid == 0)
++      full_burst();
++    yielder();
++  }
++  return 0;
++}

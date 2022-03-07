@@ -51,7 +51,7 @@ void track_time(struct proc *p)
 {
   // burst length is actual time spent on process so far
   current_burst_list[p->pid] += current_tick_time_spent;
-  printf("-----Tick Time Spent:\t%d\n", current_tick_time_spent);
+//   printf("-----Tick Time Spent:\t%d\n", current_tick_time_spent);
   
   // add to our current burst time
   //  only reset on burst time change

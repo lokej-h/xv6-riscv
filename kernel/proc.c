@@ -484,8 +484,8 @@ scheduler(void)
         // or we yielded our time, but still runnable, so the scheduler gives
         // another round.
 
-        printf("Running PID: %d\n", p->pid);
-        printf("\tNew tick limit %d\n",ticklimit);
+        // printf("Running PID: %d\n", p->pid);
+        // printf("\tNew tick limit %d\n",ticklimit);
         proc_ran = 1;
 
         // Switch to chosen process.  It is the process's job
@@ -503,14 +503,14 @@ scheduler(void)
       {
         // now that the proc cannot run anymore, the CPU burst is complete
         //  do the calculations for the next CPU burst interval for this proc
-        printf("\tBurst end.\n");
+        // printf("\tBurst end.\n");
 
         // cap tick interval
         // set next tick interval: (alpha * burst length) + ((1-alpha) * previous tick interval)
-        printf("\tCalculating new interval.\n");
-        printf("\t\tBurst Length\t%d\n\t\tPrevious Length\t%d\n", current_burst_list[p->pid], prev_tick_interval_list[p->pid]);
+        // printf("\tCalculating new interval.\n");
+        // printf("\t\tBurst Length\t%d\n\t\tPrevious Length\t%d\n", current_burst_list[p->pid], prev_tick_interval_list[p->pid]);
         uint64 projection = (current_burst_list[p->pid] * ALPHA) + ((1 - ALPHA) * prev_tick_interval_list[p->pid]);
-        printf("\t\t\tProjected %d\n", projection);
+        // printf("\t\t\tProjected %d\n", projection);
         if (projection < UNITTICK)
           current_tick_interval_list[p->pid] = UNITTICK;
         else
@@ -519,13 +519,13 @@ scheduler(void)
           else
             current_tick_interval_list[p->pid] = projection;
 
-        printf("\t\t\tAdjusted projection %d\n", projection);
+        // printf("\t\t\tAdjusted projection %d\n", projection);
 
         // keep track of previous tick interval
         prev_tick_interval_list[p->pid] = current_tick_interval_list[p->pid];
         // current_tick_interval_list[p->pid] = MAX_INTERVAL;
 
-        printf("\tNext burst length %d\n", current_tick_interval_list[p->pid]);
+        // printf("\tNext burst length %d\n", current_tick_interval_list[p->pid]);
       }
 
       release(&p->lock);
